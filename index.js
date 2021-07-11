@@ -20,34 +20,35 @@ let relationalDatabaseConnection;
 
 const webSocketClients = [];
 
-async function storeSignal(idUser, signalType, signalLevel) {
+async function storeSignalSample(idUser, signalType, signalLevel) {
   try {
     const {
       InfluxDB,
       DEFAULT_RetryDelayStrategyOptions,
     } = require("@influxdata/influxdb-client");
+    const { Point } = require("@influxdata/influxdb-client");
 
-    const token =
+    const INFLUX_DB_TOKEN =
       "f3hMIrt80eERkkvLclrJAH7rTPW5ZXhbo0LYGsXKJqzQUYvR62QlyEG-_Ywx5-uHOynFeTq5gKksoNeJmnghXg==";
     const org = "lpcluizhenrique@gmail.com";
     const bucket = `emg_signals`;
 
     const client = new InfluxDB({
       url: "https://us-west-2-1.aws.cloud2.influxdata.com",
-      token: token,
+      token: INFLUX_DB_TOKEN,
     });
 
-    const { Point } = require("@influxdata/influxdb-client");
     const writeApi = client.getWriteApi(org, bucket);
     writeApi.useDefaultTags({ host: "host1" });
     // const point = new Point('emg')
     //    .floatField('signal_level', 23.43234543)
     //    .tag('id_user', '2');
 
-    console.log(signalType, signalLevel, idUser);
+    console.log("signal", signalType, signalLevel, idUser);
 
     const point = new Point(signalType)
-      .floatField("signal_level", signalLevel)
+      .floatField("signal_level", 1 + signalLevel)
+      .timestamp(new Date())
       .tag("id_user", idUser);
 
     writeApi.writePoint(point);
@@ -77,8 +78,7 @@ async function processSignal(signal) {
   const { idUser, signalSamples } = JSON.parse(signal);
 
   for (const signalSample of signalSamples) {
-    console.log(idUser, signalSample);
-    // await storeSignal(idUser, "emg", signalSample);
+    await storeSignalSample(idUser, "emg", signalSample);
   }
 
   // -- Check if id_user exists on MySQL
@@ -96,13 +96,16 @@ async function processSignal(signal) {
   //...
 
   // -- Transmit to listening websocket
-  webSocketClients[0].sendUTF(signalSamples); // connection.sendUTF(message.utf8Data);
-  console.log("Transmitted to websocket");
+  if (webSocketClients.length > 0) {
+    webSocketClients[0].sendUTF(signalSamples); // connection.sendUTF(message.utf8Data);
+    console.log("Transmitted to websocket");
+  }
 }
 
 //---------------------------------------------------- MQTT Subscriber Code
 const mqtt = require("mqtt");
 const exp = require("constants");
+const { query } = require("express");
 (async () => {
   try {
     relationalDatabaseConnection = await mysql.createConnection({
@@ -247,6 +250,23 @@ const exp = require("constants");
 
       return httpResponse.json(user);
     });
+
+    restApi.get(
+      "/users/:id_user/samples",
+      async (httpRequest, httpResponse) => {
+        const { id_user: idUser } = httpRequest.params;
+        const {
+          type,
+          from_date: fromDate,
+          to_date: toDate,
+          from_time: fromTime,
+          to_time: toTime,
+        } = httpRequest.params;
+
+        // const samples = influxDB query;
+        return httpResponse.json(samples);
+      }
+    );
 
     restApi.listen(REST_API_PORT, async () => {
       console.log(`REST API listening on port ${REST_API_PORT}`);
