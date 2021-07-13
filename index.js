@@ -1,45 +1,47 @@
-// ---------- My Influx DB code
-// const {InfluxDB} = require('@influxdata/influxdb-client')
+// ----- Imports
 
-// const token = 'yptM0svoMLVLyjDlCHV3367er1eR3IEpFS4Xiv6pr3Ljco-T22XW0x3yn2RffbheOmir8RanDw4V6-agkXXN5Q=='
-// const org = 'lpcluizhenrique@gmail.com'
-// const bucket = `cf33074baad6335d`
-
-// const client = new InfluxDB({url: 'https://us-west-2-1.aws.cloud2.influxdata.com', token: token})
-
-// const { Point } = require('@influxdata/influxdb-client')
-// const writeApi = client.getWriteApi(org, bucket)
-// writeApi.useDefaultTags({host: 'host1'})
-
-// ------- MySQL
+// InfluxDB
+const {
+  InfluxDB,
+  DEFAULT_RetryDelayStrategyOptions,
+} = require("@influxdata/influxdb-client");
+const { Point } = require("@influxdata/influxdb-client");
+// MySQL
 const mysql = require("mysql2/promise");
+
+// ---- Definitions
+const INFLUX_DB_TOKEN =
+  "f3hMIrt80eERkkvLclrJAH7rTPW5ZXhbo0LYGsXKJqzQUYvR62QlyEG-_Ywx5-uHOynFeTq5gKksoNeJmnghXg==";
+const INFLUX_DB_URL = "https://us-west-2-1.aws.cloud2.influxdata.com";
+const INFLUX_DB_ORGANIZATION = "lpcluizhenrique@gmail.com";
+const INFLUX_DB_BUCKET = `emg_signals`;
+const INFLUX_DB_HOST = "host1";
 
 let relationalDatabaseConnection;
 
-// ------- END MySQL
-
 const webSocketClients = [];
+
+function isStringJson(str) {
+  try {
+    JSON.parse(str);
+  } catch (e) {
+    return false;
+  }
+  return true;
+}
 
 async function storeSignalSample(idUser, signalType, signalLevel) {
   try {
-    const {
-      InfluxDB,
-      DEFAULT_RetryDelayStrategyOptions,
-    } = require("@influxdata/influxdb-client");
-    const { Point } = require("@influxdata/influxdb-client");
-
-    const INFLUX_DB_TOKEN =
-      "f3hMIrt80eERkkvLclrJAH7rTPW5ZXhbo0LYGsXKJqzQUYvR62QlyEG-_Ywx5-uHOynFeTq5gKksoNeJmnghXg==";
-    const org = "lpcluizhenrique@gmail.com";
-    const bucket = `emg_signals`;
-
     const client = new InfluxDB({
-      url: "https://us-west-2-1.aws.cloud2.influxdata.com",
+      url: INFLUX_DB_URL,
       token: INFLUX_DB_TOKEN,
     });
 
-    const writeApi = client.getWriteApi(org, bucket);
-    writeApi.useDefaultTags({ host: "host1" });
+    const writeApi = client.getWriteApi(
+      INFLUX_DB_ORGANIZATION,
+      INFLUX_DB_BUCKET
+    );
+    writeApi.useDefaultTags({ host: INFLUX_DB_HOST });
     // const point = new Point('emg')
     //    .floatField('signal_level', 23.43234543)
     //    .tag('id_user', '2');
@@ -51,7 +53,7 @@ async function storeSignalSample(idUser, signalType, signalLevel) {
       .timestamp(new Date())
       .tag("id_user", idUser);
 
-    writeApi.writePoint(point);
+    writeApi.writePoint(point); // TODO await?
     // writeApi
     //     .close()
     //     .then(() => {
@@ -130,6 +132,7 @@ const { query } = require("express");
 
     mqttClient.on("message", async (topic, message) => {
       if (topic === MQTT_TOPIC) {
+        if (!isStringJson(message.toString())) return;
         await processSignal(message);
         return;
       }
@@ -255,16 +258,40 @@ const { query } = require("express");
       "/users/:id_user/samples",
       async (httpRequest, httpResponse) => {
         const { id_user: idUser } = httpRequest.params;
-        const {
-          type,
-          from_date: fromDate,
-          to_date: toDate,
-          from_time: fromTime,
-          to_time: toTime,
-        } = httpRequest.params;
+        const { from, to } = httpRequest.query;
 
-        // const samples = influxDB query;
-        return httpResponse.json(samples);
+        const queryApi = new InfluxDB({
+          url: INFLUX_DB_URL,
+          token: INFLUX_DB_TOKEN,
+        }).getQueryApi(INFLUX_DB_ORGANIZATION);
+
+        const fluxQuery = `from(bucket: "emg_signals")
+            // |> range(start: -350m)
+            |> range(start: ${from}, stop: ${to})
+            |> filter(fn: (r) => r["_measurement"] == "emg")
+            |> filter(fn: (r) => r["_field"] == "signal_level")
+            |> filter(fn: (r) => r["host"] == "${INFLUX_DB_HOST}")
+            |> filter(fn: (r) => r["id_user"] == "${idUser}")`;
+
+        console.log("*** QUERY to InfluxDB ***");
+        const samples = [];
+        queryApi.queryRows(fluxQuery, {
+          next(row, tableMeta) {
+            const rowObject = tableMeta.toObject(row);
+            samples.push({
+              time: rowObject._time,
+              signalLevel: rowObject._value,
+            });
+          },
+          error(error) {
+            console.error(error);
+            console.log("\nFinished InfluxDB Query with ERROR");
+          },
+          complete() {
+            console.log("\nFinished InfluxDB Query with SUCCESS");
+            return httpResponse.json(samples);
+          },
+        });
       }
     );
 
