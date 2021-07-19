@@ -17,6 +17,11 @@ const INFLUX_DB_ORGANIZATION = "lpcluizhenrique@gmail.com";
 const INFLUX_DB_BUCKET = `emg_signals`;
 const INFLUX_DB_HOST = "host1";
 
+const MYSQL_HOSTNAME = "sql10.freemysqlhosting.net";
+const MYSQL_USERNAME = "sql10426279";
+const MYSQL_PASSWORD = "2b2YjcvARE";
+const MYSQL_DATABASE = "sql10426279";
+
 let relationalDatabaseConnection;
 
 const webSocketClients = [];
@@ -42,64 +47,37 @@ async function storeSignalSample(idUser, signalType, signalLevel) {
       INFLUX_DB_BUCKET
     );
     writeApi.useDefaultTags({ host: INFLUX_DB_HOST });
-    // const point = new Point('emg')
-    //    .floatField('signal_level', 23.43234543)
-    //    .tag('id_user', '2');
-
-    console.log("signal", signalType, signalLevel, idUser);
-
     const point = new Point(signalType)
-      .floatField("signal_level", 1 + signalLevel)
+      .floatField("signal_level", signalLevel)
       .timestamp(new Date())
       .tag("id_user", idUser);
 
-    writeApi.writePoint(point); // TODO await?
-    // writeApi
-    //     .close()
-    //     .then(() => {
-    //         console.log('FINISHED')
-    //     })
-    //     .catch(e => {
-    //         console.error(e)
-    //         console.log('\\nFinished ERROR')
-    //     });
+    writeApi.writePoint(point);
 
     await writeApi.close();
-    console.log("FINISHED");
+    console.log("InfluxDB storage FINISHED");
   } catch (error) {
     console.error(error);
     console.log("\\nFinished ERROR");
   }
 }
-// --------------------------------------------
 
 async function processSignal(signal) {
-  // Check structure
-  console.log(signal.toString());
-  console.log(JSON.parse(signal));
   const { idUser, signalSamples } = JSON.parse(signal);
+
+  console.log("Received signal via MQTT: ", JSON.parse(signal));
 
   for (const signalSample of signalSamples) {
     await storeSignalSample(idUser, "emg", signalSample);
   }
-
-  // -- Check if id_user exists on MySQL
   const [[{ userExists }]] = await relationalDatabaseConnection.execute(
     `SELECT count(*) as userExists  from user where id_user = ${idUser}`
   );
 
-  console.log("UserExists:", userExists);
+  if (userExists !== 1) return 0;
 
-  if (userExists !== 1) {
-    return 0;
-  }
-
-  // -- Stores on InfluxDB
-  //...
-
-  // -- Transmit to listening websocket
   if (webSocketClients.length > 0) {
-    webSocketClients[0].sendUTF(signalSamples); // connection.sendUTF(message.utf8Data);
+    webSocketClients[0].sendUTF(signalSamples);
     console.log("Transmitted to websocket");
   }
 }
@@ -111,10 +89,10 @@ const { query } = require("express");
 (async () => {
   try {
     relationalDatabaseConnection = await mysql.createConnection({
-      host: "sql10.freemysqlhosting.net",
-      user: "sql10424166",
-      password: "CM4GsnJ1KP",
-      database: "sql10424166",
+      host: MYSQL_HOSTNAME,
+      user: MYSQL_USERNAME,
+      password: MYSQL_PASSWORD,
+      database: MYSQL_DATABASE,
       connectTimeout: 40000,
     });
     console.log(`Connection with relational database was established.`);
@@ -142,10 +120,10 @@ const { query } = require("express");
     // ----------------------
     // ---------------------- WebSocket
 
-    var WebSocketServer = require("websocket").server;
-    var http = require("http");
+    const WebSocketServer = require("websocket").server;
+    const http = require("http");
 
-    var server = http.createServer(function (request, response) {
+    const server = http.createServer(function (request, response) {
       console.log(new Date() + " Received request for " + request.url);
       response.writeHead(404);
       response.end();
@@ -156,33 +134,12 @@ const { query } = require("express");
 
     wsServer = new WebSocketServer({
       httpServer: server,
-      // You should not use autoAcceptConnections for production
-      // applications, as it defeats all standard cross-origin protection
-      // facilities built into the protocol and the browser.  You should
-      // *always* verify the connection's origin and decide whether or not
-      // to accept it.
       autoAcceptConnections: false,
     });
 
-    // function originIsAllowed(origin) {
-    //   // put logic here to detect whether the specified origin is allowed.
-    //   return true;
-    // }
-
     wsServer.on("request", function (request) {
-      // if (!originIsAllowed(request.origin)) {
-      //   // Make sure we only accept requests from an allowed origin
-      //   request.reject();
-      //   console.log((new Date()) + ' Connection from origin ' + request.origin + ' rejected.');
-      //   return;
-      // }
-
-      var connection = request.accept("echo-protocol", request.origin);
+      const connection = request.accept("echo-protocol", request.origin);
       console.log(new Date() + " Connection accepted.");
-      // console.log(connection);
-      // webSocketClients.push({
-      //   id_user:
-      // })
       webSocketClients.push(connection);
 
       connection.on("message", function (message) {
@@ -266,14 +223,13 @@ const { query } = require("express");
         }).getQueryApi(INFLUX_DB_ORGANIZATION);
 
         const fluxQuery = `from(bucket: "emg_signals")
-            // |> range(start: -350m)
             |> range(start: ${from}, stop: ${to})
             |> filter(fn: (r) => r["_measurement"] == "emg")
             |> filter(fn: (r) => r["_field"] == "signal_level")
             |> filter(fn: (r) => r["host"] == "${INFLUX_DB_HOST}")
             |> filter(fn: (r) => r["id_user"] == "${idUser}")`;
 
-        console.log("*** QUERY to InfluxDB ***");
+        console.log("*** QUERY to InfluxDB was made ***");
         const samples = [];
         queryApi.queryRows(fluxQuery, {
           next(row, tableMeta) {
